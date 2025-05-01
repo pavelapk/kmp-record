@@ -36,7 +36,7 @@ kotlin {
 
 mavenPublishing {
     publishToMavenCentral(SonatypeHost.CENTRAL_PORTAL)
-    signAllPublications()
+    // signAllPublications()
 
     val version = System.getenv("VERSION") ?: Config.libVersion
     coordinates(

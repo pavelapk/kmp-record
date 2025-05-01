@@ -1,4 +1,5 @@
 import config.Config
+import org.jetbrains.compose.desktop.application.dsl.TargetFormat
 import plugins.setupKmpTargets
 
 plugins {
@@ -22,6 +23,8 @@ kotlin {
     )
 
     sourceSets {
+        val desktopMain by getting
+
         androidMain.dependencies {
             implementation(libs.compose.ui.tooling.preview)
             implementation(libs.androidx.activity.compose)
@@ -39,7 +42,11 @@ kotlin {
             implementation(libs.voyager.screenModel)
             implementation(libs.voyager.koin)
             implementation(libs.materialKolor)
-            implementation(libs.mokoPermissions)
+//            implementation(libs.mokoPermissions)
+        }
+        desktopMain.dependencies {
+            implementation(compose.desktop.currentOs)
+            implementation(libs.kotlin.coroutines.swing)
         }
     }
 }
@@ -47,5 +54,21 @@ kotlin {
 android {
     dependencies {
         debugImplementation(libs.compose.ui.tooling)
+    }
+}
+
+compose.desktop {
+    application {
+        mainClass = "MainKt"
+
+        nativeDistributions {
+            targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Deb)
+            packageName = "dev.theolm.record.sample"
+            packageVersion = "1.0.0"
+
+            jvmArgs(
+                "-Dapple.awt.application.appearance=system"
+            )
+        }
     }
 }

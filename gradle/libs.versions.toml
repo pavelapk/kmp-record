@@ -42,7 +42,6 @@ detekt-composeRules = { module = "ru.kode:detekt-rules-compose", version.ref = "
 gradleMavenPublish-gradlePlugin = { module = "com.vanniktech.maven.publish:com.vanniktech.maven.publish.gradle.plugin", version.ref = "mavenPublish" }
 mokoPermissions = { module = "dev.icerock.moko:permissions-compose", version.ref = "permissions" }
 
-
 [plugins]
 androidApplication = { id = "com.android.application", version.ref = "agp" }
 androidLibrary = { id = "com.android.library", version.ref = "agp" }

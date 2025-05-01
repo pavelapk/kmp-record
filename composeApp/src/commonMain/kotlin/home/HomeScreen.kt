@@ -17,11 +17,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import cafe.adriel.voyager.core.model.rememberScreenModel
 import cafe.adriel.voyager.core.screen.Screen
-import dev.icerock.moko.permissions.Permission
-import dev.icerock.moko.permissions.PermissionsController
-import dev.icerock.moko.permissions.compose.BindEffect
-import dev.icerock.moko.permissions.compose.PermissionsControllerFactory
-import dev.icerock.moko.permissions.compose.rememberPermissionsControllerFactory
+//import dev.icerock.moko.permissions.Permission
+//import dev.icerock.moko.permissions.PermissionsController
+//import dev.icerock.moko.permissions.compose.BindEffect
+//import dev.icerock.moko.permissions.compose.PermissionsControllerFactory
+//import dev.icerock.moko.permissions.compose.rememberPermissionsControllerFactory
 import dev.theolm.record.Record
 import dev.theolm.record.config.OutputFormat
 import dev.theolm.record.config.OutputLocation
@@ -37,12 +37,12 @@ class HomeScreen : Screen {
 
     @Composable
     private fun Screen() {
-        val factory: PermissionsControllerFactory = rememberPermissionsControllerFactory()
-        val controller: PermissionsController =
-            remember(factory) { factory.createPermissionsController() }
+//        val factory: PermissionsControllerFactory = rememberPermissionsControllerFactory()
+//        val controller: PermissionsController =
+//            remember(factory) { factory.createPermissionsController() }
         val coroutineScope: CoroutineScope = rememberCoroutineScope()
 
-        BindEffect(controller)
+//        BindEffect(controller)
 
         val screenModel = rememberScreenModel { HomeScreenModel() }
         var uiState by screenModel.uiState
@@ -50,8 +50,8 @@ class HomeScreen : Screen {
         LaunchedEffect(Unit) {
             Record.setConfig(
                 RecordConfig(
-                    outputLocation = OutputLocation.Cache,
-                    outputFormat = OutputFormat.MPEG_4
+                    outputLocation = OutputLocation.Internal,
+                    outputFormat = OutputFormat.WAV
                 )
             )
         }
@@ -68,24 +68,24 @@ class HomeScreen : Screen {
                     Button(
                         onClick = {
                             coroutineScope.launch {
-                                if (!controller.isPermissionGranted(Permission.RECORD_AUDIO)) {
-                                    controller.providePermission(Permission.RECORD_AUDIO)
-                                } else {
-                                    recording = if (recording) {
-                                        Record.stopRecording().also {
-                                            println("Recording stopped. File saved at $it")
-                                        }
-                                        false
-                                    } else {
-                                        runCatching {
-                                            Record.startRecording()
-                                            true
-                                        }.onFailure {
-                                            println("Error: $it")
-                                        }.getOrDefault(false)
+//                                if (!controller.isPermissionGranted(Permission.RECORD_AUDIO)) {
+//                                    controller.providePermission(Permission.RECORD_AUDIO)
+//                                } else {
+                                recording = if (recording) {
+                                    Record.stopRecording().also {
+                                        println("Recording stopped. File saved at $it")
                                     }
+                                    false
+                                } else {
+                                    runCatching {
+                                        Record.startRecording()
+                                        true
+                                    }.onFailure {
+                                        println("Error: $it")
+                                    }.getOrDefault(false)
                                 }
                             }
+//                            }
                         }
                     ) {
                         val text = if (recording) {
