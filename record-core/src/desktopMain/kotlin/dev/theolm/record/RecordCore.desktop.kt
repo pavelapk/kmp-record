@@ -8,6 +8,7 @@ import dev.theolm.record.error.NoOutputFileException
 import dev.theolm.record.error.PermissionMissingException
 import dev.theolm.record.error.RecordFailException
 import java.io.File
+import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicReference
 import javax.sound.sampled.AudioFileFormat
 import javax.sound.sampled.AudioFormat
@@ -22,11 +23,11 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.bytedeco.ffmpeg.global.avcodec
-import org.bytedeco.ffmpeg.global.avutil
-import org.bytedeco.javacv.Frame
+import org.bytedeco.javacv.FFmpegFrameRecorder
 
 @Suppress("TooGenericExceptionCaught")
 internal actual object RecordCore {
@@ -56,6 +57,7 @@ internal actual object RecordCore {
     private val exceptionHandler = CoroutineExceptionHandler { _, throwable ->
         // Consider using a proper logger
         System.err.println(MSG_ERROR_AUDIO_WRITE + throwable.message)
+        throwable.printStackTrace()
         recordingState = RecordingState.IDLE
         closeLine() // Ensure line is closed on error
     }
@@ -192,78 +194,79 @@ internal actual object RecordCore {
     }
 
     private fun startMp4Recording(config: RecordConfig) {
-
-        val format = AudioFormat(
-            config.sampleRate.toFloat(),       // e.g. 44 100 Hz
-            BITS_PER_SAMPLE,                   // 16-bit PCM
-            NUM_CHANNELS,                      // mono
-            IS_SIGNED,                         // signed PCM
-            IS_BIG_ENDIAN                      // little-endian (false)
+        /* ───── 1. open the line ─────────────────────────────────────────────── */
+        val audioFormat = AudioFormat(
+            /* sampleRate   = */ config.sampleRate.toFloat(),
+            /* sampleSize   = */ BITS_PER_SAMPLE,
+            /* channels     = */ NUM_CHANNELS,
+            /* signed       = */ IS_SIGNED,
+            /* bigEndian    = */ IS_BIG_ENDIAN
         )
-
-        val info = DataLine.Info(TargetDataLine::class.java, format)
+        val info = DataLine.Info(TargetDataLine::class.java, audioFormat)
         val line = AudioSystem.getLine(info) as TargetDataLine
         if (!lineRef.compareAndSet(null, line)) {
             line.close()
             throw IllegalStateException(ERR_MSG_LINE_IN_USE)
         }
-        line.open(format)
+        line.open(audioFormat)
         line.start()
 
-        // ---------- FFmpeg/AAC recorder ----------
-        val recorder = org.bytedeco.javacv.FFmpegFrameRecorder(
-            outputFileRef.get()!!.absolutePath,  /* path set earlier */
+        /* ───── 2. set-up the recorder (let FFmpeg handle any resampling) ───── */
+        val currentOutputFile = outputFileRef.get()
+            ?: throw NoOutputFileException(ERR_MSG_OUTPUT_FILE_NOT_SET)
+        val recorder = FFmpegFrameRecorder(
+            currentOutputFile.absolutePath,
             NUM_CHANNELS
         ).apply {
-            this.format = "m4a"                   // container
-            this.sampleFormat = avutil.AV_SAMPLE_FMT_FLTP // AAC encoder needs FLTP
-            this.sampleRate = config.sampleRate       // 44 100 etc.
-            this.audioBitrate = 96 * 1_000  // 96 kbps
-            this.audioCodec = avcodec.AV_CODEC_ID_AAC // AAC-LC
-            this.audioChannels = NUM_CHANNELS
-            start()                                     // <-- throws on error
+            format = "m4a"                      // MPEG-4/AAC container
+            audioCodec = avcodec.AV_CODEC_ID_AAC    // AAC-LC encoder
+            audioBitrate = 96 * 1_000                 // 96 kbps
+            sampleRate = config.sampleRate          // 44 100 etc.
+            /* DO NOT set sampleFormat – Javacv will convert S16 ➜ FLTP for you */
+            start()
         }
-        //-------------------------------------------
 
+        /* ───── 3. launch the coroutine that pumps PCM into FFmpeg ──────────── */
+        recordingState = RecordingState.RECORDING
         recordingJob = scope.launch {
-            val buffer = ByteArray(line.bufferSize / 5)
+            // 1) allocate a direct ByteBuffer for native safety, and a corresponding ShortBuffer
+            val directBuf = ByteBuffer
+                .allocateDirect(line.bufferSize / 5)
+            val shortView = directBuf.asShortBuffer()
 
-            recordingState = RecordingState.RECORDING
+            // 2) small heap buffer for reading from the line
+            val heapBuf = ByteArray(directBuf.capacity())
 
             try {
-                // Create a reusable frame object
-                val frame = Frame()
-                frame.audioChannels = NUM_CHANNELS
-                frame.sampleRate = config.sampleRate
+                while (isActive && recordingState == RecordingState.RECORDING) {
+                    // read into heapBuf
+                    val nBytes = line.read(heapBuf, 0, heapBuf.size)
+                    if (nBytes <= 0) continue
 
-                while (recordingState == RecordingState.RECORDING) {
-                    val n = line.read(buffer, 0, buffer.size)
-                    if (n > 0) {
-                        /* 16-bit LE PCM ➜ ShortBuffer */
-                        val shortBuf = java.nio.ByteBuffer
-                            .wrap(buffer, 0, n)
-                            .order(java.nio.ByteOrder.LITTLE_ENDIAN)
-                            .asShortBuffer()
+                    // copy into direct buffer
+                    directBuf.clear()
+                    directBuf.put(heapBuf, 0, nBytes)
 
-                        // Manual Conversion: s16 ShortBuffer -> float FloatBuffer
-                        val floatBuf = java.nio.FloatBuffer.allocate(shortBuf.remaining())
-                        while (shortBuf.hasRemaining()) {
-                            // Normalize short to float (-1.0 to 1.0)
-                            floatBuf.put(shortBuf.get().toFloat() / Short.MAX_VALUE)
-                        }
-                        floatBuf.flip() // Prepare buffer for reading by the frame
+                    // prepare for reading as shorts
+                    directBuf.limit(nBytes)
+                    shortView.limit(nBytes / 2) // Each short is 2 bytes
 
-                        // Assign the converted FloatBuffer to the frame
-                        frame.samples = arrayOf(floatBuf)
-                        recorder.record(frame)
-                    }
+                    // send straight to FFmpeg; it handles S16→FLTP internally
+                    recorder.recordSamples(config.sampleRate, NUM_CHANNELS, shortView)
+
+                    // rewind both for next iteration
+                    // Note: shortView shares position/limit/mark with directBuf,
+                    // clearing directBuf also affects shortView's state for the next read.
+                    // No need to clear shortView separately if directBuf is cleared.
                 }
             } catch (e: CancellationException) {
-                println(MSG_CANCELLING_JOB)             // expected on stop
+                println(MSG_CANCELLING_JOB) // Expected on "stop"
             } finally {
+                // Ensure recorder is stopped and released even if an error occurs
+                // The line itself is closed in stopRecording -> closeLine
                 recorder.stop()
                 recorder.release()
-                recordingState = RecordingState.IDLE
+                recordingState = RecordingState.IDLE // Reset state in finally
             }
         }
     }
