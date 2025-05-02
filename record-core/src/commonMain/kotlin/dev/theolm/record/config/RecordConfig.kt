@@ -4,11 +4,11 @@ public data class RecordConfig(
     val outputLocation: OutputLocation = OutputLocation.Cache,
     val outputFormat: OutputFormat = OutputFormat.MPEG_4,
     val audioEncoder: AudioEncoder = AudioEncoder.AAC,
-    val sampleRate: Int = 44100
+    val sampleRate: Int = 44100,
 )
 
 public sealed class OutputFormat(public val extension: String) {
-    public data object MPEG_4 : OutputFormat(".mp4")
+    public data object MPEG_4 : OutputFormat(".m4a")
     public data object WAV: OutputFormat(".wav")
 }
 

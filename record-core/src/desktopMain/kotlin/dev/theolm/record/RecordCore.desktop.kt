@@ -24,6 +24,9 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import org.bytedeco.ffmpeg.global.avcodec
+import org.bytedeco.ffmpeg.global.avutil
+import org.bytedeco.javacv.Frame
 
 @Suppress("TooGenericExceptionCaught")
 internal actual object RecordCore {
@@ -80,7 +83,7 @@ internal actual object RecordCore {
 
             when (config.outputFormat) {
                 OutputFormat.WAV -> startWavRecording(config)
-                OutputFormat.MPEG_4 -> throw RecordFailException(ERR_MSG_MP4_NOT_IMPLEMENTED)
+                OutputFormat.MPEG_4 -> startMp4Recording(config)
             }
         }.onFailure { throwable ->
             recordingState = RecordingState.IDLE
@@ -183,6 +186,83 @@ internal actual object RecordCore {
                 // Cancellation is expected on stop
             } finally { // Other exceptions are handled by the CoroutineExceptionHandler
                 // Line is closed by stopRecording before join is called.
+                recordingState = RecordingState.IDLE
+            }
+        }
+    }
+
+    private fun startMp4Recording(config: RecordConfig) {
+
+        val format = AudioFormat(
+            config.sampleRate.toFloat(),       // e.g. 44 100 Hz
+            BITS_PER_SAMPLE,                   // 16-bit PCM
+            NUM_CHANNELS,                      // mono
+            IS_SIGNED,                         // signed PCM
+            IS_BIG_ENDIAN                      // little-endian (false)
+        )
+
+        val info = DataLine.Info(TargetDataLine::class.java, format)
+        val line = AudioSystem.getLine(info) as TargetDataLine
+        if (!lineRef.compareAndSet(null, line)) {
+            line.close()
+            throw IllegalStateException(ERR_MSG_LINE_IN_USE)
+        }
+        line.open(format)
+        line.start()
+
+        // ---------- FFmpeg/AAC recorder ----------
+        val recorder = org.bytedeco.javacv.FFmpegFrameRecorder(
+            outputFileRef.get()!!.absolutePath,  /* path set earlier */
+            NUM_CHANNELS
+        ).apply {
+            this.format = "m4a"                   // container
+            this.sampleFormat = avutil.AV_SAMPLE_FMT_FLTP // AAC encoder needs FLTP
+            this.sampleRate = config.sampleRate       // 44 100 etc.
+            this.audioBitrate = 96 * 1_000  // 96 kbps
+            this.audioCodec = avcodec.AV_CODEC_ID_AAC // AAC-LC
+            this.audioChannels = NUM_CHANNELS
+            start()                                     // <-- throws on error
+        }
+        //-------------------------------------------
+
+        recordingJob = scope.launch {
+            val buffer = ByteArray(line.bufferSize / 5)
+
+            recordingState = RecordingState.RECORDING
+
+            try {
+                // Create a reusable frame object
+                val frame = Frame()
+                frame.audioChannels = NUM_CHANNELS
+                frame.sampleRate = config.sampleRate
+
+                while (recordingState == RecordingState.RECORDING) {
+                    val n = line.read(buffer, 0, buffer.size)
+                    if (n > 0) {
+                        /* 16-bit LE PCM ➜ ShortBuffer */
+                        val shortBuf = java.nio.ByteBuffer
+                            .wrap(buffer, 0, n)
+                            .order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                            .asShortBuffer()
+
+                        // Manual Conversion: s16 ShortBuffer -> float FloatBuffer
+                        val floatBuf = java.nio.FloatBuffer.allocate(shortBuf.remaining())
+                        while (shortBuf.hasRemaining()) {
+                            // Normalize short to float (-1.0 to 1.0)
+                            floatBuf.put(shortBuf.get().toFloat() / Short.MAX_VALUE)
+                        }
+                        floatBuf.flip() // Prepare buffer for reading by the frame
+
+                        // Assign the converted FloatBuffer to the frame
+                        frame.samples = arrayOf(floatBuf)
+                        recorder.record(frame)
+                    }
+                }
+            } catch (e: CancellationException) {
+                println(MSG_CANCELLING_JOB)             // expected on stop
+            } finally {
+                recorder.stop()
+                recorder.release()
                 recordingState = RecordingState.IDLE
             }
         }

@@ -51,7 +51,6 @@ class HomeScreen : Screen {
             Record.setConfig(
                 RecordConfig(
                     outputLocation = OutputLocation.Internal,
-                    outputFormat = OutputFormat.WAV
                 )
             )
         }
